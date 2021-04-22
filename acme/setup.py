@@ -1,28 +1,35 @@
 import sys
 
-from setuptools import find_packages
 from setuptools import setup
+from setuptools import find_packages
 
-version = '1.15.0.dev0'
+
+version = '0.13.0'
 
 # Please update tox.ini when modifying dependency version requirements
 install_requires = [
-    'cryptography>=2.1.4',
-    # formerly known as acme.jose:
-    # 1.1.0+ is required to avoid the warnings described at
-    # https://github.com/certbot/josepy/issues/13.
-    'josepy>=1.1.0',
-    'PyOpenSSL>=17.3.0',
+    'argparse',
+    # load_pem_private/public_key (>=0.6)
+    # rsa_recover_prime_factors (>=0.8)
+    'cryptography>=0.8',
+    # Connection.set_tlsext_host_name (>=0.13)
+    'mock',
+    'PyOpenSSL>=0.13',
     'pyrfc3339',
     'pytz',
-    'requests>=2.6.0',
-    'requests-toolbelt>=0.3.0',
-    'setuptools>=39.0.1',
+    # requests>=2.10 is required to fix
+    # https://github.com/shazow/urllib3/issues/556. This requirement can be
+    # relaxed to 'requests[security]>=2.4.1', however, less useful errors
+    # will be raised for some network/SSL errors.
+    'requests[security]>=2.10',
+    # For pkg_resources. >=1.0 so pip resolves it to a version cryptography
+    # will tolerate; see #2599:
+    'setuptools>=1.0',
+    'six',
 ]
 
 dev_extras = [
-    'pytest',
-    'pytest-xdist',
+    'nose',
     'tox',
 ]
 
@@ -30,6 +37,7 @@ docs_extras = [
     'Sphinx>=1.0',  # autodoc_member_order = 'bysource', autodoc_default_flags
     'sphinx_rtd_theme',
 ]
+
 
 setup(
     name='acme',
@@ -39,17 +47,18 @@ setup(
     author="Certbot Project",
     author_email='client-dev@letsencrypt.org',
     license='Apache License 2.0',
-    python_requires='>=3.6',
     classifiers=[
-        'Development Status :: 5 - Production/Stable',
+        'Development Status :: 3 - Alpha',
         'Intended Audience :: Developers',
         'License :: OSI Approved :: Apache Software License',
         'Programming Language :: Python',
+        'Programming Language :: Python :: 2',
+        'Programming Language :: Python :: 2.6',
+        'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.6',
-        'Programming Language :: Python :: 3.7',
-        'Programming Language :: Python :: 3.8',
-        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.3',
+        'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
         'Topic :: Internet :: WWW/HTTP',
         'Topic :: Security',
     ],
@@ -61,4 +70,10 @@ setup(
         'dev': dev_extras,
         'docs': docs_extras,
     },
+    entry_points={
+        'console_scripts': [
+            'jws = acme.jose.jws:CLI.run',
+        ],
+    },
+    test_suite='acme',
 )
