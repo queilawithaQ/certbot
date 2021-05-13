@@ -1,12 +1,12 @@
 """Contains UI methods for LE user operations."""
 import logging
+import os
 
 import zope.component
 
 from certbot import errors
 from certbot import interfaces
 from certbot import util
-from certbot.compat import os
 from certbot.display import util as display_util
 
 logger = logging.getLogger(__name__)
@@ -29,17 +29,14 @@ def get_email(invalid=False, optional=True):
 
     """
     invalid_prefix = "There seem to be problems with that address. "
-    msg = "Enter email address (used for urgent renewal and security notices)\n"
+    msg = "Enter email address (used for urgent notices and lost key recovery)"
     unsafe_suggestion = ("\n\nIf you really want to skip this, you can run "
                          "the client with --register-unsafely-without-email "
-                         "but you will then be unable to receive notice about "
-                         "impending expiration or revocation of your "
-                         "certificates or problems with your Certbot "
-                         "installation that will lead to failure to renew.\n\n")
+                         "but make sure you then backup your account key from "
+                         "/etc/letsencrypt/accounts\n\n")
     if optional:
         if invalid:
             msg += unsafe_suggestion
-            suggest_unsafe = False
         else:
             suggest_unsafe = True
     else:
@@ -48,8 +45,7 @@ def get_email(invalid=False, optional=True):
     while True:
         try:
             code, email = z_util(interfaces.IDisplay).input(
-                invalid_prefix + msg if invalid else msg,
-                force_interactive=True)
+                invalid_prefix + msg if invalid else msg)
         except errors.MissingCommandlineFlag:
             msg = ("You should register before running non-interactively, "
                    "or provide --agree-tos and --email <email_address> flags.")
@@ -60,11 +56,12 @@ def get_email(invalid=False, optional=True):
                 raise errors.Error(
                     "An e-mail address or "
                     "--register-unsafely-without-email must be provided.")
-            raise errors.Error("An e-mail address must be provided.")
-        if util.safe_email(email):
+            else:
+                raise errors.Error("An e-mail address must be provided.")
+        elif util.safe_email(email):
             return email
-        if suggest_unsafe:
-            msg = unsafe_suggestion + msg
+        elif suggest_unsafe:
+            msg += unsafe_suggestion
             suggest_unsafe = False  # add this message at most once
 
         invalid = bool(email)
@@ -74,41 +71,25 @@ def choose_account(accounts):
     """Choose an account.
 
     :param list accounts: Containing at least one
-        :class:`~certbot._internal.account.Account`
+        :class:`~certbot.account.Account`
 
     """
     # Note this will get more complicated once we start recording authorizations
     labels = [acc.slug for acc in accounts]
 
     code, index = z_util(interfaces.IDisplay).menu(
-        "Please choose an account", labels, force_interactive=True)
+        "Please choose an account", labels)
     if code == display_util.OK:
         return accounts[index]
-    return None
+    else:
+        return None
 
-def choose_values(values, question=None):
-    """Display screen to let user pick one or multiple values from the provided
-    list.
 
-    :param list values: Values to select from
-
-    :returns: List of selected values
-    :rtype: list
-    """
-    code, items = z_util(interfaces.IDisplay).checklist(
-        question, tags=values, force_interactive=True)
-    if code == display_util.OK and items:
-        return items
-    return []
-
-def choose_names(installer, question=None):
+def choose_names(installer):
     """Display screen to select domains to validate.
 
     :param installer: An installer object
     :type installer: :class:`certbot.interfaces.IInstaller`
-
-    :param `str` question: Overriding default question to ask the user if asked
-        to choose from domain names.
 
     :returns: List of selected names
     :rtype: `list` of `str`
@@ -122,13 +103,16 @@ def choose_names(installer, question=None):
     names = get_valid_domains(domains)
 
     if not names:
-        return _choose_names_manually(
-            "No names were found in your configuration files. ")
+        prefix = ["No names were found in your", "configuration files. "]
+        if hasattr(installer, "name") and isinstance(installer.name, str):
+            prefix.insert(1, installer.name)
+        return _choose_names_manually(" ".join(prefix))
 
-    code, names = _filter_names(names, question)
+    code, names = _filter_names(names)
     if code == display_util.OK and names:
         return names
-    return []
+    else:
+        return []
 
 
 def get_valid_domains(domains):
@@ -147,18 +131,8 @@ def get_valid_domains(domains):
             continue
     return valid_domains
 
-def _sort_names(FQDNs):
-    """Sort FQDNs by SLD (and if many, by their subdomains)
 
-    :param list FQDNs: list of domain names
-
-    :returns: Sorted list of domain names
-    :rtype: list
-    """
-    return sorted(FQDNs, key=lambda fqdn: fqdn.split('.')[::-1][1:])
-
-
-def _filter_names(names, override_question=None):
+def _filter_names(names):
     """Determine which names the user would like to select from a list.
 
     :param list names: domain names
@@ -169,14 +143,9 @@ def _filter_names(names, override_question=None):
     :rtype: tuple
 
     """
-    #Sort by domain first, and then by subdomain
-    sorted_names = _sort_names(names)
-    if override_question:
-        question = override_question
-    else:
-        question = "Which names would you like to activate HTTPS for?"
     code, names = z_util(interfaces.IDisplay).checklist(
-        question, tags=sorted_names, cli_flag="--domains", force_interactive=True)
+        "Which names would you like to activate HTTPS for?",
+        tags=names, cli_flag="--domains")
     return code, [str(s) for s in names]
 
 
@@ -192,10 +161,10 @@ def _choose_names_manually(prompt_prefix=""):
     code, input_ = z_util(interfaces.IDisplay).input(
         prompt_prefix +
         "Please enter in your domain name(s) (comma and/or space separated) ",
-        cli_flag="--domains", force_interactive=True)
+        cli_flag="--domains")
 
     if code == display_util.OK:
-        invalid_domains = {}
+        invalid_domains = dict()
         retry_message = ""
         try:
             domain_list = display_util.separate_list_input(input_)
@@ -210,9 +179,14 @@ def _choose_names_manually(prompt_prefix=""):
             try:
                 domain_list[i] = util.enforce_domain_sanity(domain)
             except errors.ConfigurationError as e:
-                invalid_domains[domain] = str(e)
+                try:  # Python 2
+                    # pylint: disable=no-member
+                    err_msg = e.message.encode('utf-8')
+                except AttributeError:
+                    err_msg = str(e)
+                invalid_domains[domain] = err_msg
 
-        if invalid_domains:
+        if len(invalid_domains):
             retry_message = (
                 "One or more of the entered domain names was not valid:"
                 "{0}{0}").format(os.linesep)
@@ -225,8 +199,7 @@ def _choose_names_manually(prompt_prefix=""):
 
         if retry_message:
             # We had error in input
-            retry = z_util(interfaces.IDisplay).yesno(retry_message,
-                                                      force_interactive=True)
+            retry = z_util(interfaces.IDisplay).yesno(retry_message)
             if retry:
                 return _choose_names_manually()
         else:
@@ -237,46 +210,56 @@ def _choose_names_manually(prompt_prefix=""):
 def success_installation(domains):
     """Display a box confirming the installation of HTTPS.
 
+    .. todo:: This should be centered on the screen
+
     :param list domains: domain names which were enabled
 
     """
     z_util(interfaces.IDisplay).notification(
-        "Congratulations! You have successfully enabled {0}".format(
-            _gen_https_names(domains)),
+        "Congratulations! You have successfully enabled {0}{1}{1}"
+        "You should test your configuration at:{1}{2}".format(
+            _gen_https_names(domains),
+            os.linesep,
+            os.linesep.join(_gen_ssl_lab_urls(domains))),
+        height=(10 + len(domains)),
         pause=False)
 
 
-def success_renewal(domains):
+def success_renewal(domains, action):
     """Display a box confirming the renewal of an existing certificate.
 
+    .. todo:: This should be centered on the screen
+
     :param list domains: domain names which were renewed
+    :param str action: can be "reinstall" or "renew"
 
     """
     z_util(interfaces.IDisplay).notification(
-        "Your existing certificate has been successfully renewed, and the "
+        "Your existing certificate has been successfully {3}ed, and the "
         "new certificate has been installed.{1}{1}"
-        "The new certificate covers the following domains: {0}".format(
+        "The new certificate covers the following domains: {0}{1}{1}"
+        "You should test your configuration at:{1}{2}".format(
             _gen_https_names(domains),
-            os.linesep),
+            os.linesep,
+            os.linesep.join(_gen_ssl_lab_urls(domains)),
+            action),
+        height=(14 + len(domains)),
         pause=False)
 
 
-def success_revocation(cert_path):
-    """Display a message confirming a certificate has been revoked.
+def _gen_ssl_lab_urls(domains):
+    """Returns a list of urls.
 
-    :param list cert_path: path to certificate which was revoked.
+    :param list domains: Each domain is a 'str'
 
     """
-    display_util.notify(
-        "Congratulations! You have successfully revoked the certificate "
-        "that was located at {0}.".format(cert_path)
-    )
+    return ["https://www.ssllabs.com/ssltest/analyze.html?d=%s" % dom for dom in domains]
 
 
 def _gen_https_names(domains):
     """Returns a string of the https domains.
 
-    Domains are formatted nicely with ``https://`` prepended to each.
+    Domains are formatted nicely with https:// prepended to each.
 
     :param list domains: Each domain is a 'str'
 
@@ -292,61 +275,3 @@ def _gen_https_names(domains):
             domains[-1])
 
     return ""
-
-
-def _get_validated(method, validator, message, default=None, **kwargs):
-    if default is not None:
-        try:
-            validator(default)
-        except errors.Error as error:
-            logger.debug('Encountered invalid default value "%s" when prompting for "%s"',
-                         default,
-                         message,
-                         exc_info=True)
-            raise AssertionError('Invalid default "{0}"'.format(default))
-
-    while True:
-        code, raw = method(message, default=default, **kwargs)
-        if code == display_util.OK:
-            try:
-                validator(raw)
-                return code, raw
-            except errors.Error as error:
-                logger.debug('Validator rejected "%s" when prompting for "%s"',
-                             raw,
-                             message,
-                             exc_info=True)
-                zope.component.getUtility(interfaces.IDisplay).notification(str(error), pause=False)
-        else:
-            return code, raw
-
-
-def validated_input(validator, *args, **kwargs):
-    """Like `~certbot.interfaces.IDisplay.input`, but with validation.
-
-    :param callable validator: A method which will be called on the
-        supplied input. If the method raises an `errors.Error`, its
-        text will be displayed and the user will be re-prompted.
-    :param list `*args`: Arguments to be passed to `~certbot.interfaces.IDisplay.input`.
-    :param dict `**kwargs`: Arguments to be passed to `~certbot.interfaces.IDisplay.input`.
-    :return: as `~certbot.interfaces.IDisplay.input`
-    :rtype: tuple
-    """
-    return _get_validated(zope.component.getUtility(interfaces.IDisplay).input,
-                          validator, *args, **kwargs)
-
-
-def validated_directory(validator, *args, **kwargs):
-    """Like `~certbot.interfaces.IDisplay.directory_select`, but with validation.
-
-    :param callable validator: A method which will be called on the
-        supplied input. If the method raises an `errors.Error`, its
-        text will be displayed and the user will be re-prompted.
-    :param list `*args`: Arguments to be passed to `~certbot.interfaces.IDisplay.directory_select`.
-    :param dict `**kwargs`: Arguments to be passed to
-        `~certbot.interfaces.IDisplay.directory_select`.
-    :return: as `~certbot.interfaces.IDisplay.directory_select`
-    :rtype: tuple
-    """
-    return _get_validated(zope.component.getUtility(interfaces.IDisplay).directory_select,
-                          validator, *args, **kwargs)
